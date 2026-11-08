@@ -24,7 +24,7 @@ footer{color:#6e7681;text-align:center;font-size:11px;margin:17px 0}
 <body><main><section class="panel">
 <div class="brand"><div class="mark">↥</div> ZIP to GitHub</div>
 <h1>Upload ZIP → GitHub</h1>
-<p class="muted">Ekstrak ZIP di browser dan kirim semua file ke repository GitHub sebagai satu commit. Mendukung repository kosong maupun repository yang sudah berisi file.</p>
+<p class="muted">Ekstrak ZIP di browser dan kirim ke repository GitHub. Jika ZIP hanya berisi satu folder utama, folder tersebut akan otomatis dihapus dan file langsung ditaruh di halaman utama repo.</p>
 
 <label for="repo">Link repository GitHub</label>
 <input id="repo" placeholder="https://github.com/username/repository" autocomplete="url">
@@ -70,6 +70,20 @@ async function uploadAll(){
   if(!entries.length)throw Error("ZIP tidak berisi file.");if(entries.length>300)throw Error("Jumlah file melebihi 300.");
   const files=[];for(const e of entries){const p=cleanPath(e.name);if(p)files.push({path:p,base64:await e.async("base64")})}
   if(!files.length)throw Error("Tidak ada file valid dalam ZIP.");
+
+  // --- FITUR BARU: Hapus folder utama jika semua file ada di dalamnya ---
+  if (files.length > 0 && files[0].path.includes('/')) {
+      const rootFolder = files[0].path.split('/')[0] + '/';
+      const allHaveSameRoot = files.every(f => f.path.startsWith(rootFolder));
+      if (allHaveSameRoot) {
+          show(`Terdeteksi folder pembungkus "${rootFolder}". Menghapus folder dan menaruh file di halaman utama...`);
+          for (const f of files) {
+              f.path = f.path.substring(rootFolder.length);
+          }
+      }
+  }
+  // --------------------------------------------------------------------
+
   show(`ZIP diekstrak: ${files.length} file. Memeriksa branch ${branch}...`);
   
   let parentSha=null,baseTree=null,branchExists=false;
@@ -88,14 +102,13 @@ async function uploadAll(){
   // --- PERBAIKAN UNTUK REPOSITORY KOSONG ---
   if(!branchExists && files.length > 0) {
       show(`Menginisialisasi repository kosong dengan file pertama: ${files[0].path}`);
-      const first = files.shift(); // Ambil 1 file untuk commit pertama
+      const first = files.shift(); 
       const pathEncoded = first.path.split('/').map(encodeURIComponent).join('/');
       await gh(`/repos/${owner}/${repo}/contents/${pathEncoded}`, token, {
           method: "PUT",
           body: JSON.stringify({ message: "Initial commit from ZIP", content: first.base64, branch: branch })
       });
       
-      // Jika ZIP hanya berisi 1 file, selesaikan proses
       if (files.length === 0) {
           progress(100);
           show(`Berhasil! File diunggah ke repository kosong. https://github.com/${owner}/${repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`, "ok");
@@ -103,7 +116,6 @@ async function uploadAll(){
           return;
       }
       
-      // Ambil data branch yang baru saja dibuat untuk melanjutkan sisa file
       const ref = await gh(`/repos/${owner}/${repo}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`, token);
       parentSha = ref.object.sha;
       branchExists = true;
@@ -128,7 +140,7 @@ async function uploadAll(){
   }else{
    await gh(`/repos/${owner}/${repo}/git/refs`,token,{method:"POST",body:JSON.stringify({ref:"refs/heads/"+branch,sha:commit.sha})});
   }
-  progress(100);show(`Berhasil! ${files.length + 1} file masuk ke ${owner}/${repo}, branch ${branch}. https://github.com/${owner}/${repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`,"ok");
+  progress(100);show(`Berhasil! ${files.length} file diproses ke ${owner}/${repo}. https://github.com/${owner}/${repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`,"ok");
   $("token").value="";
  }catch(e){show("Gagal: "+e.message,"err")}
  finally{btn.disabled=!(selectedZip&&$("confirm").checked)}
