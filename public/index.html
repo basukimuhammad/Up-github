@@ -56,6 +56,7 @@ function progress(n){$("progress").style.display="block";$("bar").style.width=Ma
 function parseRepo(v){const s=v.trim().replace(/\.git\/?$/,"").replace(/\/+$/,"");const m=s.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/]+)\/([^/]+)$/i);if(!m)throw Error("Masukkan URL repository, contoh https://github.com/user/repo");return{owner:m[1],repo:m[2]}}
 async function gh(path,token,opt={}){const r=await fetch("https://api.github.com"+path,{...opt,headers:{"Accept":"application/vnd.github+json","Authorization":"Bearer "+token,"X-GitHub-Api-Version":"2022-11-28",...(opt.body?{"Content-Type":"application/json"}:{}),...(opt.headers||{})}});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error((d.message||"GitHub API error")+" (HTTP "+r.status+")");return d}
 function cleanPath(p){p=p.replace(/\\/g,"/").replace(/^\/+/,"");const a=p.split("/");if(!p||a.some(x=>x===".."||x===".")||a[0].toLowerCase()===".git")return null;return p}
+
 async function uploadAll(){
  const btn=$("upload");btn.disabled=true;clearStatus();progress(1);
  try{
@@ -70,6 +71,7 @@ async function uploadAll(){
   const files=[];for(const e of entries){const p=cleanPath(e.name);if(p)files.push({path:p,base64:await e.async("base64")})}
   if(!files.length)throw Error("Tidak ada file valid dalam ZIP.");
   show(`ZIP diekstrak: ${files.length} file. Memeriksa branch ${branch}...`);
+  
   let parentSha=null,baseTree=null,branchExists=false;
   try{
    const ref=await gh(`/repos/${owner}/${repo}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`,token);
@@ -78,11 +80,38 @@ async function uploadAll(){
    baseTree=commit.tree.sha;
   }catch(e){
    const msg=String(e.message);
-   // GitHub returns 409 "Git Repository is empty" for an empty repository.
    if(msg.includes("HTTP 409")&&msg.includes("Git Repository is empty")){branchExists=false;parentSha=null;baseTree=null}
    else if(msg.includes("HTTP 404")){branchExists=false;parentSha=null;baseTree=null}
    else throw e;
   }
+
+  // --- PERBAIKAN UNTUK REPOSITORY KOSONG ---
+  if(!branchExists && files.length > 0) {
+      show(`Menginisialisasi repository kosong dengan file pertama: ${files[0].path}`);
+      const first = files.shift(); // Ambil 1 file untuk commit pertama
+      const pathEncoded = first.path.split('/').map(encodeURIComponent).join('/');
+      await gh(`/repos/${owner}/${repo}/contents/${pathEncoded}`, token, {
+          method: "PUT",
+          body: JSON.stringify({ message: "Initial commit from ZIP", content: first.base64, branch: branch })
+      });
+      
+      // Jika ZIP hanya berisi 1 file, selesaikan proses
+      if (files.length === 0) {
+          progress(100);
+          show(`Berhasil! File diunggah ke repository kosong. https://github.com/${owner}/${repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`, "ok");
+          $("token").value="";
+          return;
+      }
+      
+      // Ambil data branch yang baru saja dibuat untuk melanjutkan sisa file
+      const ref = await gh(`/repos/${owner}/${repo}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`, token);
+      parentSha = ref.object.sha;
+      branchExists = true;
+      const commit = await gh(`/repos/${owner}/${repo}/git/commits/${parentSha}`, token);
+      baseTree = commit.tree.sha;
+  }
+  // --- SELESAI PERBAIKAN ---
+
   const treeItems=[];
   for(let i=0;i<files.length;i++){
    const f=files[i];show(`Mengirim file ${i+1}/${files.length}: ${f.path}`);
@@ -99,7 +128,7 @@ async function uploadAll(){
   }else{
    await gh(`/repos/${owner}/${repo}/git/refs`,token,{method:"POST",body:JSON.stringify({ref:"refs/heads/"+branch,sha:commit.sha})});
   }
-  progress(100);show(`Berhasil! ${files.length} file masuk ke ${owner}/${repo}, branch ${branch}. https://github.com/${owner}/${repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`,"ok");
+  progress(100);show(`Berhasil! ${files.length + 1} file masuk ke ${owner}/${repo}, branch ${branch}. https://github.com/${owner}/${repo}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`,"ok");
   $("token").value="";
  }catch(e){show("Gagal: "+e.message,"err")}
  finally{btn.disabled=!(selectedZip&&$("confirm").checked)}
